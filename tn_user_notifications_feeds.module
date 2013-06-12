@@ -1,0 +1,29 @@
+<?php
+/*
+ * @file tn_user_notifications_feeds.module
+ *
+ * Provides a feeds user processor that auto-adds a profile node, plus signs
+ * user up for blog notification and mailchimp subscription.
+ *
+ * @author Jim Kirkpatrick - jim at i hyphen jk dot co dot uk
+ */
+
+
+/**
+ * Implements hook_feeds_plugins().
+*/
+function tn_user_notifications_feeds_feeds_plugins() {
+  $info = array();
+  $info['FeedsUserNotificationProcessor'] = array(
+    'name' => 'User Notification processor',
+    'description' => 'Create users with notification set.',
+    'help' => 'Creates users who will have a specific notification subscription.',
+    'handler' => array(
+      'parent' => 'FeedsProcessor',
+      'class' => 'FeedsUserNotificationProcessor',
+      'file' => 'FeedsUserNotificationProcessor.inc',
+      'path' => drupal_get_path('module', 'tn_user_notifications_feeds'),
+    ),
+  );
+  return $info;
+}

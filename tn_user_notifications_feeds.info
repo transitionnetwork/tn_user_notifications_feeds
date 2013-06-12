@@ -1,0 +1,8 @@
+name = TN User Notifications Feeds
+description = Feeds processor for importing users and subscribing them to Rob's blog.
+package = Transition Network
+
+core = 6.x
+dependencies[] = feeds
+dependencies[] = notifications
+dependencies[] = notifications_content
