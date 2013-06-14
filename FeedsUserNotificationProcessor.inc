@@ -22,15 +22,26 @@ class FeedsUserNotificationProcessor extends FeedsProcessor {
     // Count number of created and updated nodes.
     $created = $updated = $failed = 0;
 
+    // prep CSV
+    $export = array(
+      'updated' => array(),
+      'created' => array(),
+    );
+
+    // do import of user
     while ($item = $batch->shiftItem()) {
 
-      if (!($uid = $this->existingItemId($batch, $source)) || $this->config['update_existing']) {
+      // Check existing
+      $uid = $this->existingItemId($batch, $source);
 
-        // Map item to a term.
-        $account = $this->map($batch);
+      // Map item to a term.
+      $account = $this->map($batch);
 
-        // Watchdog logging entry.
-        $results = array();
+      // Watchdog logging entry.
+      $results = array();
+
+      // Existing = don't update users & profiles for existing people.
+      if (!$uid) {
 
         // Generate usename, clear names values from $account ready for save.
         $account->name = $this->generateUsername($account);
@@ -40,94 +51,76 @@ class FeedsUserNotificationProcessor extends FeedsProcessor {
         $last_name = $account->last;
         unset($account->last);
 
-        // Check if user name and mail are set, otherwise continue.
+        // Check if user name and mail are set, otherwise skip/continue.
         if (empty($account->name) || empty($account->mail) || !valid_email_address($account->mail)) {
           $failed++;
           continue;
         }
 
-        // Don't update users & profiles for existing people
-        if (!$uid) {
-          // Add user id if available.
-          if (!empty($uid)) {
-            $account->uid = $uid;
-          }
-          // Save & reload the user.
-          user_save($account, (array) $account);
-          if (!$account->uid) {
-            // Create/update content profile node(s).
-            $account = user_load(array('mail' => $account->mail));
-          }
+        // Save new user & reload.
+        user_save($account, (array) $account);
+        if (!$account->uid) {
+          $account = user_load(array('mail' => $account->mail));
         }
         $results['uid'] = $account->uid;
 
-        // Profile node, Mailchimp and Notificationsusers & subs here
-        if ($account->uid) {
-          // USER PROFILE NODE - try to load existing node.
-          $type_name = 'profile';
-          $profile_node = content_profile_load($type_name, $account->uid);
-          if (empty($profile_node)) {
-            // None existing, generate new one
-            $profile_node = array(
-              'uid' => $account->uid,
-              'name' => isset($account->name) ? $account->name : '',
-              'type' => $type_name,
-              'language' => '',
-            );
-            $profile_node = (object) $profile_node;
-          }
-
-          // JK set name fields, save new profile
-          $profile_node->field_name_first[0]['value'] = $first_name;
-          $profile_node->field_name_last[0]['value'] = $last_name;
-          node_save($profile_node);
-          $results['nid'] = $profile_node->nid;
-
-          // NOTIFICATIONS
-          // Notifications sub add for Rob's blog
-          if (module_exists('notifications')) {
-            // Get defaults, set up basics.
-            $subscription = notifications_build_subscription(array(
-              'uid' => $account->uid,
-              'type' => 'typeauthor',
-              'send_interval' => notifications_user_setting('send_interval', $account, 0),
-              'send_method' => notifications_user_setting('send_method', $account),
-            ));
-            // build sub, add fields for author and type
-            $subscription->add_field_args('author,type', ROB_HOPKINS_UID . ',blog');
-            $subscription->set_account($account);
-            $results['subscription status'] = notifications_save_subscription($subscription);
-          }
-
-          // MAILCHIMP
-          // MailChimp newsletter
-          if (module_exists('mailchimp') && $q = _mailchimp_get_api_object()) {
-            // subscribe
-            $lists = _mailchimp_get_available_lists($account);
-            $list = $lists[TRANSITION_NEWSLETTER_MC_LID];
-            $merge_vars = _mailchimp_load_user_list_mergevars($account->uid, TRANSITION_NEWSLETTER_MC_LID, $q->listMergeVars(TRANSITION_NEWSLETTER_MC_LID));
-
-            $results['mailchimp status'] = _mailchimp_subscribe_user($list, $account->mail, $merge_vars, TRUE, $q);
-          }
-        }
+        // Create Profile node if needs be.
+        $results['nid'] = $this->generateProfileNode($account, $first_name, $last_name);
 
         // Bump counts.
-        if ($uid) {
-          $updated++;
-          $results['action'] = 'updated';
-        }
-        else {
-          $created++;
-          $results['action'] = 'created';
-        }
+        $created++;
+        $results['action'] = 'created';
 
-        // Write log.
-        watchdog(
-          'FeedsUserNotificationProcessor',
-          __function__ . ': ' . print_r($results, TRUE)
-        );
       }
+      else {
+        // Got user already, load account.
+        $account = user_load(array('mail' => $account->mail));
+        $results['name'] = $account->name;
+        $results['uid'] = $account->uid;
+
+        // Bump counts.
+        $updated++;
+        $results['action'] = 'updated';
+      }
+
+      // Now add Mailchimp and Notificationsusers & subs here
+      $results['subscription status'] = $this->createNotification($account);
+      $results['mailchimp status'] = $this->createMailchimpSubscription($account);
+
+      // make one-time link for created users
+      $onetime = '';
+      if ($results['action'] == 'created') {
+        $onetime = user_pass_reset_url($account);
+      }
+
+      // add line to export for CSV
+      $date = format_date(time() + 86400, 'small');
+      $export[$results['action']][] = $account->uid .',"'. $account->name .'","'. $account->mail .'","'. $onetime .'","'. ($account->login ? $date : '') ."\"";
+
+      // Write log for this user.
+      watchdog(
+        'FeedsUserNotificationProcessor',
+        $results['action'] . ': ' . print_r($results, TRUE)
+      );
+
     }
+    // prep headers for export,
+    $head = t('UID') .','. t('Name') .','. t('Mail') .','. t('URL') .','. t('Expiry') ."\r\n";
+    watchdog(
+      'FeedsUserNotificationProcessor',
+        'All: ' . ': ' . print_r($export, TRUE)
+    );
+    // Output updated list as csv.
+    watchdog(
+      'FeedsUserNotificationProcessor',
+      'Updated' . $head . implode("\r\n", $export['updated'])
+    );
+
+    // Output created list as csv.
+    watchdog(
+      'FeedsUserNotificationProcessor',
+      'Created' . $head . implode("\r\n", $export['created'])
+    );
 
     // Set messages.
     if ($failed) {
@@ -152,6 +145,65 @@ class FeedsUserNotificationProcessor extends FeedsProcessor {
     }
   }
 
+  /**
+   * Generates user profile node if one does not exist for $account.
+   */
+  private function generateProfileNode($account, $first_name, $last_name) {
+    $type_name = 'profile';
+    // Try to load existing node.
+    $profile_node = content_profile_load($type_name, $account->uid);
+    if (empty($profile_node)) {
+      // None existing, generate new one
+      $profile_node = array(
+        'uid' => $account->uid,
+        'name' => isset($account->name) ? $account->name : '',
+        'type' => $type_name,
+        'language' => '',
+      );
+      $profile_node = (object) $profile_node;
+
+      // JK set name fields, save new profile
+      $profile_node->field_name_first[0]['value'] = $first_name;
+      $profile_node->field_name_last[0]['value'] = $last_name;
+      node_save($profile_node);
+    }
+    // Return nid regardless.
+    return $profile_node->nid;
+  }
+
+  /**
+   * NOTIFICATIONS - Notifications sub add for Rob's blog.
+   */
+  private function createNotification($account) {
+    // Get defaults, set up basics.
+    $subscription = notifications_build_subscription(array(
+      'uid' => $account->uid,
+      'type' => 'typeauthor',
+      'send_interval' => notifications_user_setting('send_interval', $account, 0),
+      'send_method' => notifications_user_setting('send_method', $account),
+    ));
+    // build sub, add fields for author and type
+    $subscription->add_field_args('author,type', ROB_HOPKINS_UID . ',blog');
+    $subscription->set_account($account);
+    return notifications_save_subscription($subscription);
+  }
+
+
+  /**
+   * NOTIFICATIONS - Notifications sub add for Rob's blog.
+   */
+  private function createMailchimpSubscription($account) {
+    // MAILCHIMP
+    // MailChimp newsletter
+    if ($q = _mailchimp_get_api_object()) {
+      // subscribe
+      $lists = _mailchimp_get_available_lists($account);
+      $list = $lists[TRANSITION_NEWSLETTER_MC_LID];
+      $merge_vars = _mailchimp_load_user_list_mergevars($account->uid, TRANSITION_NEWSLETTER_MC_LID, $q->listMergeVars(TRANSITION_NEWSLETTER_MC_LID));
+
+      return _mailchimp_subscribe_user($list, $account->mail, $merge_vars, TRUE, $q);
+    }
+  }
   // Builds a unique username based on first & last name, avoiding collisions
   // @see https://github.com/transitionnetwork/transition_pse/blob/master/transition_pse.module
   // @todo check more 'drupally' way
@@ -252,13 +304,6 @@ class FeedsUserNotificationProcessor extends FeedsProcessor {
         '#options' => $roles,
       );
     }
-    // @todo Implement true updating.
-    $form['update_existing'] = array(
-      '#type' => 'checkbox',
-      '#title' => t('Replace existing users'),
-      '#description' => t('If an existing user is found for an imported user, replace it. Existing users will be determined using mappings that are a "unique target".'),
-      '#default_value' => $this->config['update_existing'],
-    );
     return $form;
   }
 

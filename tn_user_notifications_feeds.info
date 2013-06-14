@@ -3,6 +3,8 @@ description = Feeds processor for importing users and subscribing them to Rob's 
 package = Transition Network
 
 core = 6.x
+dependencies[] = content_profile
 dependencies[] = feeds
+dependencies[] = mailchimp
 dependencies[] = notifications
 dependencies[] = notifications_content
