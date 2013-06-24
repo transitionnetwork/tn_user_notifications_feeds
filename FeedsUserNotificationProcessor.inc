@@ -32,7 +32,9 @@ class FeedsUserNotificationProcessor extends FeedsProcessor {
     while ($item = $batch->shiftItem()) {
 
       // Ensure this runs for up to 2 mins.
-      drupal_set_time_limit(120);
+      if (function_exists('set_time_limit')) {
+        @set_time_limit(2*60);
+      }
 
       // Check existing
       $uid = $this->existingItemId($batch, $source);
