@@ -31,6 +31,9 @@ class FeedsUserNotificationProcessor extends FeedsProcessor {
     // do import of user
     while ($item = $batch->shiftItem()) {
 
+      // Ensure this runs for up to 2 mins.
+      drupal_set_time_limit(120);
+
       // Check existing
       $uid = $this->existingItemId($batch, $source);
 
